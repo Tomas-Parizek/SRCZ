@@ -1,0 +1,936 @@
+diff --git a/src/ast/seq_decl_plugin.cpp b/src/ast/seq_decl_plugin.cpp
+index 21171a57d..7acb1adb9 100644
+--- a/src/ast/seq_decl_plugin.cpp
++++ b/src/ast/seq_decl_plugin.cpp
+@@ -195,6 +195,7 @@ void seq_decl_plugin::init() {
+     sort* reT  = m.mk_sort(m_family_id, RE_SORT, 1, &paramS);
+     sort* boolT = m.mk_bool_sort();
+     sort* intT  = arith_util(m).mk_int();
++	sort* realT = arith_util(m).mk_real();
+     sort* predA = autil.mk_array_sort(A, boolT);
+     sort* seqAseqAseqA[3] = { seqA, seqA, seqA };
+     sort* seqAreAseqA[3] = { seqA, reA, seqA };
+@@ -258,6 +259,8 @@ void seq_decl_plugin::init() {
+     m_sigs[_OP_STRING_FROM_CHAR] = alloc(psig, m, "char", 1, 0, nullptr, strT);
+     m_sigs[OP_STRING_ITOS]       = alloc(psig, m, "str.from_int", 0, 1, &intT, strT);
+     m_sigs[OP_STRING_STOI]       = alloc(psig, m, "str.to_int", 0, 1, &strT, intT);
++	m_sigs[OP_STRING_RTOS]		 = alloc(psig, m, "str.from_real", 0, 1, &realT, strT);
++	m_sigs[OP_STRING_STOR]		 = alloc(psig, m, "str.to_real", 0, 1, &strT, realT);
+     m_sigs[OP_STRING_LT]         = alloc(psig, m, "str.<", 0, 2, str2T, boolT);
+     m_sigs[OP_STRING_LE]         = alloc(psig, m, "str.<=", 0, 2, str2T, boolT);
+     m_sigs[OP_STRING_IS_DIGIT]   = alloc(psig, m, "str.is_digit", 0, 1, &strT, boolT);
+@@ -424,6 +427,8 @@ func_decl* seq_decl_plugin::mk_func_decl(decl_kind k, unsigned num_parameters, p
+     case OP_SEQ_UNIT:
+     case OP_STRING_ITOS:
+     case OP_STRING_STOI:
++	case OP_STRING_RTOS:
++	case OP_STRING_STOR:
+     case OP_STRING_LT:
+     case OP_STRING_LE:
+     case OP_STRING_IS_DIGIT:
+@@ -685,7 +690,9 @@ void seq_decl_plugin::get_op_names(svector<builtin_name> & op_names, symbol cons
+     op_names.push_back(builtin_name("str.to-re", _OP_STRING_TO_REGEXP));
+     op_names.push_back(builtin_name("str.to-int", OP_STRING_STOI));
+     op_names.push_back(builtin_name("str.to.int", OP_STRING_STOI));
++	op_names.push_back(builtin_name("str.to.real", OP_STRING_STOR));
+     op_names.push_back(builtin_name("str.from-int", OP_STRING_ITOS));
++	op_names.push_back(builtin_name("str.from-real", OP_STRING_RTOS));
+     op_names.push_back(builtin_name("int.to.str", OP_STRING_ITOS));
+     op_names.push_back(builtin_name("re.nostr",  _OP_REGEXP_EMPTY));
+     op_names.push_back(builtin_name("re.complement", OP_RE_COMPLEMENT));
+diff --git a/src/ast/seq_decl_plugin.h b/src/ast/seq_decl_plugin.h
+index eb368c2e3..ff3e5b010 100644
+--- a/src/ast/seq_decl_plugin.h
++++ b/src/ast/seq_decl_plugin.h
+@@ -83,6 +83,8 @@ enum seq_op_kind {
+     OP_STRING_CONST,
+     OP_STRING_ITOS,
+     OP_STRING_STOI,
++	OP_STRING_RTOS,
++	OP_STRING_STOR,
+     OP_STRING_UBVTOS,
+     OP_STRING_SBVTOS,
+     OP_STRING_LT,
+@@ -364,6 +366,8 @@ public:
+         bool is_suffix(expr const* n)   const { return is_app_of(n, m_fid, OP_SEQ_SUFFIX); }
+         bool is_itos(expr const* n)     const { return is_app_of(n, m_fid, OP_STRING_ITOS); }
+         bool is_stoi(expr const* n)     const { return is_app_of(n, m_fid, OP_STRING_STOI); }
++		bool is_rtos(expr const* n)		const { return is_app_of(n, m_fid, OP_STRING_RTOS); }
++		bool is_stor(expr const* n)		const { return is_app_of(n, m_fid, OP_STRING_STOR); }
+         bool is_ubv2s(expr const* n)    const { return is_app_of(n, m_fid, OP_STRING_UBVTOS); }
+         bool is_sbv2s(expr const* n)    const { return is_app_of(n, m_fid, OP_STRING_SBVTOS); }
+         bool is_in_re(expr const* n)    const { return is_app_of(n, m_fid, OP_SEQ_IN_RE); }
+@@ -415,6 +419,8 @@ public:
+         MATCH_BINARY(is_le);
+         MATCH_UNARY(is_itos);
+         MATCH_UNARY(is_stoi);
++		MATCH_UNARY(is_rtos);
++		MATCH_UNARY(is_stor);
+         MATCH_UNARY(is_ubv2s);
+         MATCH_UNARY(is_sbv2s);
+         MATCH_UNARY(is_is_digit);
+diff --git a/src/smt/theory_str_noodler/aut_assignment.h b/src/smt/theory_str_noodler/aut_assignment.h
+index d8743401d..234b7e727 100644
+--- a/src/smt/theory_str_noodler/aut_assignment.h
++++ b/src/smt/theory_str_noodler/aut_assignment.h
+@@ -117,7 +117,21 @@ namespace smt::noodler {
+             return only_digits_and_epsilon;
+         }
+ 
+-        /**
++		static mata::nfa::Nfa decimal_number_automaton() {
++			mata::nfa::Nfa decimal_nfa(2, {0}, {0, 1});
++
++			for (mata::Symbol digit = DIGIT_SYMBOL_START; digit <= DIGIT_SYMBOL_END; ++digit) {
++				decimal_nfa.delta.add(0, digit, 0);
++				decimal_nfa.delta.add(1, digit, 1);
++			}
++
++			mata::Symbol dot = '.';
++			decimal_nfa.delta.add(0, dot, 1);
++
++			return decimal_nfa;
++		}
++
++		/**
+          * @brief Returns automaton that accept words of length @p length containing only symbols encoding digits (symbols from 48 to 57)
+          */
+         static mata::nfa::Nfa digit_automaton_of_length(unsigned length) {
+@@ -130,7 +144,20 @@ namespace smt::noodler {
+             return only_digits_of_length;
+         }
+ 
+-        /**
++		static mata::nfa::Nfa digit_or_dot_automaton_of_length(unsigned length) {
++			mata::nfa::Nfa digits_and_dots(length + 1, {0}, {length});
++			mata::Symbol dot = '.';
++
++			for (unsigned i = 0; i < length; ++i) {
++				for (mata::Symbol digit = AutAssignment::DIGIT_SYMBOL_START; digit <= AutAssignment::DIGIT_SYMBOL_END; ++digit) {
++					digits_and_dots.delta.add(i, digit, i + 1);
++				}
++				digits_and_dots.delta.add(i, dot, i + 1);
++			}
++			return digits_and_dots;
++		}
++
++		/**
+          * @brief Get the vector of "interval" words accepted by @p aut
+          * 
+          * Interval word is a vector of mata::Symbol intervals (pairs), for example
+diff --git a/src/smt/theory_str_noodler/decision_procedure.cpp b/src/smt/theory_str_noodler/decision_procedure.cpp
+index cb6aa4cbf..51f234f24 100644
+--- a/src/smt/theory_str_noodler/decision_procedure.cpp
++++ b/src/smt/theory_str_noodler/decision_procedure.cpp
+@@ -616,6 +616,7 @@ namespace smt::noodler {
+         // the following functions (getting formula for conversions) assume that we have flattened substitution map
+         solution.flatten_substition_map();
+ 
++		STRACE("real-conversion", tout << "Začíná se řešit formule na konverze" << std::endl);
+         // add formula for conversions
+         auto conv_form_with_precision = get_formula_for_conversions();
+         conjuncts.push_back(conv_form_with_precision.first);
+@@ -632,8 +633,8 @@ namespace smt::noodler {
+         return {result, precision};
+     }
+ 
+-    std::pair<std::set<BasicTerm>,std::set<BasicTerm>> DecisionProcedure::get_vars_substituted_in_conversions() {
+-        std::set<BasicTerm> code_subst_vars, int_subst_vars;
++    std::tuple<std::set<BasicTerm>,std::set<BasicTerm>,std::set<BasicTerm>> DecisionProcedure::get_vars_substituted_in_conversions() {
++        std::set<BasicTerm> code_subst_vars, int_subst_vars, real_subst_vars;
+         for (const TermConversion& conv : conversions) {
+             switch (conv.type)
+             {
+@@ -653,11 +654,19 @@ namespace smt::noodler {
+                     }
+                     break;
+                 }
++				case ConversionType::TO_REAL:
++				case ConversionType::FROM_REAL:
++				{
++					for (const BasicTerm& var : solution.get_substituted_vars(conv.string_var)) {
++						real_subst_vars.insert(var);
++					}
++					break;
++				}
+                 default:
+                     UNREACHABLE();
+             }
+         }
+-        return {code_subst_vars, int_subst_vars};
++        return {code_subst_vars, int_subst_vars, real_subst_vars};
+     }
+ 
+     LenNode DecisionProcedure::get_formula_for_code_subst_vars(const std::set<BasicTerm>& code_subst_vars) {
+@@ -804,6 +813,131 @@ namespace smt::noodler {
+         return result;
+     }
+ 
++	std::vector<std::pair<rational,rational>> DecisionProcedure::encode_interval_words(const interval_word& interval_word) {
++		std::vector<std::pair<rational,rational>> interval_cases = { {rational(0),rational(0)} }; // start with interval [0-0], with the assumption that interval word is not empty
++		assert(interval_word.size() > 0);
++		rational place_value(1);
++		bool need_to_split = false;
++		for (auto interval_it = interval_word.crbegin(); interval_it != interval_word.crend(); ++interval_it) { // going backwards in interval_word
++			rational interval_start(interval_it->first - AutAssignment::DIGIT_SYMBOL_START);
++			rational interval_end(interval_it->second - AutAssignment::DIGIT_SYMBOL_START);
++
++			if (!need_to_split) {
++				assert(interval_cases.size() == 1);
++				interval_cases[0].first += interval_start*place_value;
++				interval_cases[0].second += interval_end*place_value;
++				if (interval_start != 0 || interval_end != 9) {
++					need_to_split = true;
++				}
++			} else {
++				std::vector<std::pair<rational,rational>> new_interval_cases;
++				for (std::pair<rational,rational>& interval_case : interval_cases) {
++					for (rational possible_digit = interval_start; possible_digit <= interval_end; ++possible_digit) {
++						new_interval_cases.push_back({
++													 possible_digit*place_value + interval_case.first,
++													 possible_digit*place_value + interval_case.second
++											 });
++					}
++				}
++				interval_cases = new_interval_cases;
++			}
++			place_value *= 10;
++		}
++
++		return std::move(interval_cases);
++	}
++
++	LenNode DecisionProcedure::encode_real_interval_words(const BasicTerm& var, const BasicTerm& original_var, const std::vector<interval_word>& interval_words) {
++		LenNode result(LenFormulaType::OR);
++		STRACE("real-conversion", tout << "Vypisuji intervalová slova:");
++
++		for (auto &i : interval_words)
++		{
++			auto dot = (ssize_t)(std::find(i.begin(), i.end(), std::pair{46u, 46u}) - i.begin()); // Pozice tečky, když je stejná jako velikost vektoru, tečka tam není
++			if (dot == i.size()) {
++				// Vyřešit jeden jako int
++				STRACE("real-conversion", tout << "Varianta bez tečky:");
++				auto x = encode_interval_words(i);
++				for (auto &j : x) {
++					STRACE("real-conversion", tout << "(" << j.first << ", " << j.second << ")" << " ");
++
++					result.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
++						LenNode{LenFormulaType::LEQ, {j.first, var}},
++						LenNode{LenFormulaType::LEQ, {var, j.second}},
++						LenNode{LenFormulaType::IS_INT, {var}},
++						LenNode{LenFormulaType::EQ, {dot_position(original_var), rational(-1)}},
++					});
++				}
++				STRACE("real-conversion", tout << std::endl);
++			}
++			else {
++				STRACE("real-conversion", tout << "Varianta s tečkou:");
++				for (auto &j : i) {
++					STRACE("real-conversion", tout << "(" << j.first << ", " << j.second << ")" << " ");;
++				}
++				STRACE("real-conversion", tout << std::endl);
++				// Vyřešit ho se vším všudy
++				interval_word whole_interval, decimal_interval;
++				std::copy(i.begin(), i.begin() + dot, std::back_inserter(whole_interval));
++				std::copy(i.begin() + dot + 1, i.end(), std::back_inserter(decimal_interval));
++
++				size_t decimal_part_length = i.size() - dot - 1;
++				rational decimal_part_divisor = rational{1};
++				for (size_t l = 0; l < decimal_part_length; ++l)
++					decimal_part_divisor *= 10;
++				rational decimal_part_multiplier = 1 / decimal_part_divisor;
++
++				std::vector<std::pair<rational,rational>> whole_intervals, decimal_intervals;
++				if (whole_interval.size())
++					whole_intervals = encode_interval_words(whole_interval);
++				else
++					whole_intervals.emplace_back(rational{0}, rational{0});
++
++				if (decimal_interval.size())
++					decimal_intervals = encode_interval_words(decimal_interval);
++				else
++					decimal_intervals.emplace_back(rational{0}, rational{0});
++
++				auto vars = parts_of_real_number(var);
++				BasicTerm wholeVar = std::move(vars.first), decimalVar = std::move(vars.second);
++
++				for (auto &j : whole_intervals)
++				{
++					for (auto &k : decimal_intervals)
++					{
++						result.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
++							LenNode{LenFormulaType::IS_INT, {wholeVar}},
++							LenNode{LenFormulaType::IS_INT, {decimalVar}},
++
++							LenNode{LenFormulaType::LEQ, {j.first, wholeVar}},
++							LenNode{LenFormulaType::LEQ, {wholeVar, j.second}},
++
++							LenNode{LenFormulaType::LEQ, {k.first, decimalVar}},
++							LenNode{LenFormulaType::LEQ, {decimalVar, k.second}},
++
++							LenNode{LenFormulaType::EQ, {
++								var,
++								LenNode{LenFormulaType::PLUS, {
++									wholeVar,
++									LenNode{LenFormulaType::TIMES, {
++										decimalVar,
++										decimal_part_multiplier
++									}}
++								}}
++							}},
++
++							LenNode{LenFormulaType::EQ, {
++								dot_position(original_var),
++								rational((int)dot)
++							}},
++						});
++					}
++				}
++			}
++		}
++		return result;
++	}
++
+     std::pair<LenNode, LenNodePrecision> DecisionProcedure::get_formula_for_int_subst_vars(const std::set<BasicTerm>& int_subst_vars, const std::set<BasicTerm>& code_subst_vars, std::map<BasicTerm,std::vector<unsigned>>& int_subst_vars_to_possible_valid_lengths) {
+         LenNode result(LenFormulaType::AND);
+         LenNodePrecision res_precision = LenNodePrecision::PRECISE;
+@@ -928,7 +1062,85 @@ namespace smt::noodler {
+         return {result, res_precision};
+     }
+ 
+-    LenNode DecisionProcedure::get_formula_for_code_conversion(const TermConversion& conv) {
++	std::pair<LenNode, LenNodePrecision> DecisionProcedure::get_formula_for_real_subst_vars(const std::set<BasicTerm>& real_subst_vars, std::map<BasicTerm,std::vector<unsigned>>& real_subst_vars_to_possible_valid_lengths) {
++		using namespace mata::nfa;
++		STRACE("real-conversion", tout << "Získávání délek" << std::endl);
++
++		LenNode result{LenFormulaType::AND};
++		LenNodePrecision res_precision{LenNodePrecision::PRECISE};
++
++		Nfa only_valid = AutAssignment::decimal_number_automaton();
++		Nfa contain_non_valid = solution.aut_ass.complement_aut(only_valid);
++
++		for (const BasicTerm& real_subst_var : real_subst_vars) {
++			STRACE("real-conversion", tout << "Řeším proměnnou " << real_subst_var << std::endl);
++			real_subst_vars_to_possible_valid_lengths[real_subst_var] = {};
++			LenNode formula_for_real_subst_var(LenFormulaType::OR);
++
++			std::shared_ptr<Nfa> aut = solution.aut_ass.at(real_subst_var);
++
++			Nfa aut_valid_part{reduce(intersection(*aut, only_valid).trim())};
++			Nfa aut_non_valid_part{reduce(intersection(*aut, contain_non_valid).trim())};
++
++			// Zakóduj možnost nevalidního řetězce
++			if (!aut_non_valid_part.is_lang_empty()) {
++				formula_for_real_subst_var.succ.emplace_back(LenFormulaType::AND,
++															 std::vector<LenNode>{
++					solution.aut_ass.get_lengths(aut_non_valid_part, real_subst_var),
++					LenNode(LenFormulaType::EQ, {real_version_of(real_subst_var), -1}),
++					LenNode(LenFormulaType::EQ, {dot_position(real_subst_var), -2})
++				});
++			}
++
++			// Pokud není validní možnost, continue
++			if (aut_valid_part.is_lang_empty()) {
++				result.succ.push_back(formula_for_real_subst_var);
++				continue;
++			}
++
++			// Pokud je ve validním stringu epsilon, zakóduj ho
++			if (aut_valid_part.is_in_lang({})) {
++				formula_for_real_subst_var.succ.emplace_back(LenFormulaType::AND,
++															 std::vector<LenNode>{
++					LenNode{LenFormulaType::EQ, {real_subst_var, 0}},
++					LenNode{LenFormulaType::NEQ, {real_version_of(real_subst_var), -1}},
++					LenNode{LenFormulaType::EQ, {dot_position(real_subst_var), -3}}
++				});
++				real_subst_vars_to_possible_valid_lengths[real_subst_var].push_back(0);
++			}
++
++			// Zakóduj maximální délku slov
++			unsigned max_length_of_words;
++
++			if (aut_valid_part.is_acyclic()) {
++				max_length_of_words = aut_valid_part.num_of_states() - 1;
++			} else {
++				max_length_of_words = m_params.m_underapprox_length;
++				res_precision = LenNodePrecision::UNDERAPPROX;
++			}
++
++			// Pro každou maximální délku slova vytvoř podformuli
++			for (unsigned l = 1; l <= max_length_of_words; ++l) {
++				Nfa aut_valid_of_length = minimize(intersection(aut_valid_part, AutAssignment::digit_or_dot_automaton_of_length(l)).trim());
++				if (aut_valid_of_length.is_lang_empty())
++					continue;
++
++				real_subst_vars_to_possible_valid_lengths[real_subst_var].push_back(l);
++
++				formula_for_real_subst_var.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
++					LenNode{LenFormulaType::EQ, {real_subst_var, l}},
++					encode_real_interval_words(real_version_of(real_subst_var), real_subst_var, AutAssignment::get_interval_words(aut_valid_of_length))
++				});
++			}
++
++			result.succ.push_back(formula_for_real_subst_var);
++		}
++
++		STRACE("real-conversion", tout << "Vypisuji výsledek hledání délek:\n" << result << std::endl);
++		return {result, res_precision};
++	}
++
++	LenNode DecisionProcedure::get_formula_for_code_conversion(const TermConversion& conv) {
+         const BasicTerm& s = conv.string_var;
+         const BasicTerm& c = conv.int_var;
+ 
+@@ -969,6 +1181,74 @@ namespace smt::noodler {
+         });
+     }
+ 
++	LenNode DecisionProcedure::get_formula_for_real_conversion(const TermConversion& conv, const std::map<BasicTerm, std::vector<unsigned>> &real_subst_vars_to_possible_valid_lengths)
++	{
++		using Cases = std::vector<std::vector<unsigned>>;
++
++		const BasicTerm& s = conv.string_var;
++		const BasicTerm& i = conv.int_var;
++
++		LenNode result{LenFormulaType::OR};
++		const auto &subst_vars = solution.get_substituted_vars(s);
++
++		if (conv.type == ConversionType::TO_REAL)
++		{
++			LenNode empty_or_one_subst_contains_non_digit{LenFormulaType::OR,
++														  {LenNode{LenFormulaType::EQ, {s, 0}}}};
++			for (const auto &subst_var : subst_vars)
++			{
++				empty_or_one_subst_contains_non_digit.succ.emplace_back(LenFormulaType::EQ, std::vector<LenNode>{
++					real_version_of(subst_var), -1
++				});
++			}
++			result.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
++				LenNode{LenFormulaType::LT, {i, 0}},
++				LenNode{LenFormulaType::EQ, {s, 0}}
++			});
++		}
++		else
++		{
++			result.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
++				LenNode{LenFormulaType::LT, {i, 0}},
++				LenNode{LenFormulaType::EQ, {s, 0}}
++			});
++		}
++
++		if (!subst_vars.size())
++			return result;
++
++		Cases length_cases = {{}};
++		for (const auto &s_i : subst_vars)
++		{
++			Cases new_cases;
++			const auto &possible_lengths = real_subst_vars_to_possible_valid_lengths.at(s_i);
++			if (!possible_lengths.size())
++				return result;
++			for (unsigned possible_length : possible_lengths)
++			{
++				for (const auto& old_case : length_cases)
++				{
++					auto new_case = old_case;
++					new_case.push_back(possible_length);
++					new_cases.push_back(new_case);
++				}
++			}
++			length_cases = new_cases;
++		}
++
++		for (const auto & one_case : length_cases)
++		{
++			assert(subst_vars.size() == one_case.size());
++			// V zásadě mnohem víc kombinací, než kolik by bylo u intu
++
++
++		}
++
++		STRACE("real-conversion", tout << "Formule pro převod: " << result << std::endl);
++		//return result;
++		return LenNode{LenFormulaType::TRUE};
++	}
++
+     LenNode DecisionProcedure::get_formula_for_int_conversion(const TermConversion& conv, const std::map<BasicTerm,std::vector<unsigned>>& int_subst_vars_to_possible_valid_lengths) {
+         const BasicTerm& s = conv.string_var;
+         const BasicTerm& i = conv.int_var;
+@@ -1124,7 +1404,10 @@ namespace smt::noodler {
+         LenNodePrecision res_precision = LenNodePrecision::PRECISE;
+ 
+         // collect all variables that substitute some string_var of some conversion
+-        std::tie(code_subst_vars, int_subst_vars) = get_vars_substituted_in_conversions();
++        std::tie(code_subst_vars, int_subst_vars, real_subst_vars) = get_vars_substituted_in_conversions();
++
++		STRACE("real-conversion", tout << "Reálné proměnné: ");
++		for (auto &i : real_subst_vars) STRACE("real-conversion", tout << i << std::endl);
+ 
+         // create formula for each variable substituting some string_var in some code conversion
+         LenNode code_subst_formula = get_formula_for_code_subst_vars(code_subst_vars);
+@@ -1142,6 +1425,16 @@ namespace smt::noodler {
+             res_precision = int_conv_formula_with_precision.second;
+         }
+ 
++		std::map<BasicTerm, std::vector<unsigned>> real_subst_vars_to_possible_valid_lengths;
++		auto real_conv_formula_with_precision = get_formula_for_real_subst_vars(real_subst_vars, real_subst_vars_to_possible_valid_lengths);
++		if (!real_conv_formula_with_precision.first.succ.empty()) {
++			result.succ.push_back(real_conv_formula_with_precision.first);
++		}
++		if (real_conv_formula_with_precision.second != LenNodePrecision::PRECISE) {
++			res_precision = real_conv_formula_with_precision.second;
++		}
++		result.succ.push_back(real_conversions_dot(real_subst_vars));
++
+         for (const TermConversion& conv : conversions) {
+             STRACE("str-conversion",
+                 tout << " processing " << get_conversion_name(conv.type) << " with string var " << conv.string_var << " and int var " << conv.int_var << std::endl;
+@@ -1161,6 +1454,12 @@ namespace smt::noodler {
+                     result.succ.push_back(get_formula_for_int_conversion(conv, int_subst_vars_to_possible_valid_lengths));
+                     break;
+                 }
++				case ConversionType::TO_REAL:
++				case ConversionType::FROM_REAL:
++				{
++					result.succ.push_back(get_formula_for_real_conversion(conv, real_subst_vars_to_possible_valid_lengths));
++					break;
++				}
+                 default:
+                     UNREACHABLE();
+             }
+@@ -1176,6 +1475,45 @@ namespace smt::noodler {
+         return {result, res_precision};
+     }
+ 
++	LenNode DecisionProcedure::real_conversions_dot(std::set<BasicTerm> &real_vars) {
++		// Bude tečka
++		LenNode dot_exits{LenFormulaType::OR};
++		LenNode exists_non_epsilon{LenFormulaType::OR};
++		// TODO: Špatně, že existuje tečka musí být kódováno kladným dot_position
++		// TODO: Tahle omezení by měla být implikována validitou
++		for (auto &i : real_vars) {
++			dot_exits.succ.emplace_back(LenFormulaType::NEQ, std::vector<LenNode>{
++					dot_position(i), rational{-1}
++			});
++			exists_non_epsilon.succ.emplace_back(LenFormulaType::NEQ, std::vector<LenNode>{
++					dot_position(i), rational{-3}
++			});
++		}
++
++		LenNode result{LenFormulaType::AND, {dot_exits, exists_non_epsilon}};
++
++		// Vylučují se
++		// TODO: Špatně, to, že je jeden -1 (resp. že je kladný >=0 spíš) neznamená že další je validní bez tečky
++		// TODO: Může totiž být i epsilon
++		for (auto i = real_vars.begin(); i != real_vars.end(); ++i)
++		{
++			for (auto j = std::next(i); j != real_vars.end(); ++j)
++			{
++				auto &s0 = *i;
++				auto &s1 = *j;
++
++				result.succ.emplace_back(LenFormulaType::OR, std::vector<LenNode>{
++					LenNode{LenFormulaType::EQ, {dot_position(s0), rational{-1}}},
++					LenNode{LenFormulaType::EQ, {dot_position(s1), rational{-1}}},
++				});
++			}
++		}
++
++		STRACE("real-conversion", tout << "Tečková omezení: " << result << std::endl);
++
++		return result;
++	}
++
+     void DecisionProcedure::init_ca_diseq(const Predicate& diseq) {
+         this->disequations.add_predicate(diseq);
+         // include variables occurring in the diseqations into init_length_sensitive_vars
+diff --git a/src/smt/theory_str_noodler/decision_procedure.h b/src/smt/theory_str_noodler/decision_procedure.h
+index e88d2576d..05bd9bd3d 100644
+--- a/src/smt/theory_str_noodler/decision_procedure.h
++++ b/src/smt/theory_str_noodler/decision_procedure.h
+@@ -341,6 +341,8 @@ namespace smt::noodler {
+          */
+         std::pair<LenNode, LenNodePrecision> get_formula_for_conversions();
+ 
++		LenNode real_conversions_dot(std::set<BasicTerm> &real_vars);
++
+         /**
+          * @brief Initialize disquation for TagAut-based handling. Assumed to be called during 
+          * the decision procedure initialization.
+@@ -371,6 +373,21 @@ namespace smt::noodler {
+             return BasicTerm(BasicTermType::Variable, var.get_name() + "!to_int");
+         }
+ 
++		BasicTerm real_version_of(const BasicTerm& var) {
++			return BasicTerm(BasicTermType::Variable, var.get_name() + "!to_real");
++		}
++
++		BasicTerm dot_position(const BasicTerm& var) {
++			return BasicTerm(BasicTermType::Variable, var.get_name() + "!dot_position");
++		}
++
++		std::pair<BasicTerm, BasicTerm> parts_of_real_number(const BasicTerm& var) {
++			BasicTerm wholePart{BasicTermType::Variable, var.get_name() + "!whole_part"};
++			BasicTerm decimalPart{BasicTermType::Variable, var.get_name() + "!decimal_part"};
++
++			return {wholePart, decimalPart};
++		}
++
+         /**
+          * Gets the pair of variable sets (code_subst_vars, int_subst_vars) where code_subst_vars
+          * contains all vars s_i, such that there exists "c = to_code(s)" or "s = from_code(c)"
+@@ -378,7 +395,7 @@ namespace smt::noodler {
+          * The set int_subst_vars is defined similarly, but for "i = to_int(s)" or "s = from_int(i)"
+          * conversions.
+          */
+-        std::pair<std::set<BasicTerm>,std::set<BasicTerm>> get_vars_substituted_in_conversions();
++		std::tuple<std::set<BasicTerm>,std::set<BasicTerm>,std::set<BasicTerm>> get_vars_substituted_in_conversions();
+ 
+         /**
+          * @brief Get the formula for to_code/from_code substituting variables
+@@ -393,6 +410,10 @@ namespace smt::noodler {
+          */
+         LenNode encode_interval_words(const BasicTerm& var, const std::vector<interval_word>& interval_words);
+ 
++		std::vector<std::pair<rational,rational>> encode_interval_words(const interval_word& interval_word);
++
++		LenNode encode_real_interval_words(const BasicTerm& var, const BasicTerm& original_var, const std::vector<interval_word>& interval_words);
++
+         /**
+          * @brief Get the formula for to_int/from_int substituting variables
+          * 
+@@ -409,6 +430,8 @@ namespace smt::noodler {
+          */
+         std::pair<LenNode, LenNodePrecision> get_formula_for_int_subst_vars(const std::set<BasicTerm>& int_subst_vars, const std::set<BasicTerm>& code_subst_vars, std::map<BasicTerm,std::vector<unsigned>>& int_subst_vars_to_possible_valid_lengths);
+ 
++		std::pair<LenNode, LenNodePrecision> get_formula_for_real_subst_vars(const std::set<BasicTerm>& real_subst_vars, std::map<BasicTerm,std::vector<unsigned>>& real_subst_vars_to_possible_valid_lengths);
++
+         /**
+          * @brief Get the formula encoding to_code/from_code conversion
+          */
+@@ -421,6 +444,8 @@ namespace smt::noodler {
+          */
+         LenNode get_formula_for_int_conversion(const TermConversion& conv, const std::map<BasicTerm,std::vector<unsigned>>& int_subst_vars_to_possible_valid_lengths);
+ 
++		LenNode get_formula_for_real_conversion(const TermConversion& conv, const std::map<BasicTerm, std::vector<unsigned>> &real_subst_vars_to_possible_valid_lengths);
++
+         /**
+          * Formula containing all not_contains predicate (nothing else)
+          */
+@@ -436,6 +461,7 @@ namespace smt::noodler {
+         // see get_vars_substituted_in_conversions() for what these sets mean, we save them so that we can use them in model generation
+         std::set<BasicTerm> code_subst_vars;
+         std::set<BasicTerm> int_subst_vars;
++		std::set<BasicTerm> real_subst_vars;
+         
+         bool is_model_initialized = false;
+         /**
+@@ -491,7 +517,6 @@ namespace smt::noodler {
+             init_aut_ass(init_aut_ass),
+             conversions(conversions),
+             m_params(par) {
+-            
+         }
+         
+         /**
+diff --git a/src/smt/theory_str_noodler/formula.cpp b/src/smt/theory_str_noodler/formula.cpp
+index 9d7ae7030..36ab7f65a 100644
+--- a/src/smt/theory_str_noodler/formula.cpp
++++ b/src/smt/theory_str_noodler/formula.cpp
+@@ -400,9 +400,49 @@ namespace smt::noodler {
+         return z3_quantif;
+     }
+ 
+-    expr_ref constr_z3_expr_for_leaf(LenFormulaContext& ctx, const LenNode& node) {
++	expr_ref real_constr_z3_expr_for_leaf(LenFormulaContext& ctx, const LenNode& node) {
++		if (node.atom_val.get_type() == BasicTermType::Length) {
++			return expr_ref(ctx.arith_utilities.mk_real(rational(node.atom_val.get_name().encode().c_str())), ctx.manager);
++		}
++
++		if (node.atom_val.get_type() == BasicTermType::Literal) {
++			return expr_ref(ctx.arith_utilities.mk_real(node.atom_val.get_name().length()), ctx.manager);
++		}
++
++		auto known_expr_it = ctx.known_z3_exprs.find(node.atom_val);
++		if (known_expr_it != ctx.known_z3_exprs.end()) {  // We have a know/cached z3_expr
++			expr_ref expr = known_expr_it->second;
++
++			if (ctx.seq_utilities.is_string(expr.get()->get_sort())) {
++				return expr_ref(ctx.seq_utilities.str.mk_length(expr), ctx.manager);
++			}
++
++			STRACE("real-conversion", tout << "Je proměnná real?: " << ctx.arith_utilities.is_real(expr.get()->get_sort()) << std::endl);
++
++			return expr;
++		}
++
++		std::string var_name = node.atom_val.get_name().encode();
++		auto it = ctx.quantified_vars.find(var_name);
++		bool is_quantified = (it != ctx.quantified_vars.end());
++
++		if (is_quantified) {
++			int quantifier_node_height = it->second;
++			int de_brujin_index = ctx.current_quantif_depth - (quantifier_node_height + 1);
++
++			return expr_ref(ctx.manager.mk_var(de_brujin_index, ctx.arith_utilities.mk_int()), ctx.manager);
++		}
++
++		app* var = ctx.manager.mk_const(symbol(var_name.c_str()), ctx.arith_utilities.mk_real());
++		return expr_ref(var, ctx.manager);
++	}
++
++    expr_ref constr_z3_expr_for_leaf(LenFormulaContext& ctx, const LenNode& node, bool isReal = true) {
++		if (isReal)
++			return real_constr_z3_expr_for_leaf(ctx, node);
++
+         if (node.atom_val.get_type() == BasicTermType::Length) {
+-            return expr_ref(ctx.arith_utilities.mk_int(rational(node.atom_val.get_name().encode().c_str())), ctx.manager);
++			return expr_ref(ctx.arith_utilities.mk_int(rational(node.atom_val.get_name().encode().c_str())), ctx.manager);
+         }
+ 
+         if (node.atom_val.get_type() == BasicTermType::Literal) {
+@@ -452,7 +492,8 @@ namespace smt::noodler {
+ 
+         switch(node.type) {
+         case LenFormulaType::LEAF: {
+-            return constr_z3_expr_for_leaf(ctx, node);
++			auto x = constr_z3_expr_for_leaf(ctx, node);
++            return x;
+         }
+ 
+         case LenFormulaType::PLUS: {
+@@ -568,6 +609,13 @@ namespace smt::noodler {
+             return expr_ref(manager.mk_false(), manager);
+         }
+ 
++		case LenFormulaType::IS_INT: {
++			assert(node.succ.size() == 1);
++			expr_ref left = convert_len_node_to_z3_formula(ctx, node.succ[0]);
++			expr_ref lt(m_util_a.mk_is_int(left), manager);
++			return lt;
++		}
++
+         default:
+             util::throw_error("Unexpected length formula type");
+             return {{}, manager};
+diff --git a/src/smt/theory_str_noodler/formula.h b/src/smt/theory_str_noodler/formula.h
+index 4e196ce0c..8b121be59 100644
+--- a/src/smt/theory_str_noodler/formula.h
++++ b/src/smt/theory_str_noodler/formula.h
+@@ -167,6 +167,7 @@ namespace smt::noodler {
+         FALSE,
+         EXISTS, // existential quantifier
+         FORALL, // quantifier for all
++		IS_INT
+     };
+ 
+     struct LenNode {
+@@ -251,6 +252,10 @@ namespace smt::noodler {
+             os << "(exists (( " << quantified_var << " Int))";
+             break;
+         }
++		case LenFormulaType::IS_INT: {
++			os << "(is_int";
++			break;
++		}
+         default:
+             UNREACHABLE();
+         }
+@@ -738,6 +743,8 @@ namespace smt::noodler {
+         FROM_CODE,
+         TO_INT,
+         FROM_INT,
++		TO_REAL,
++		FROM_REAL
+     };
+ 
+     // Term conversion: to_int/from_int/to_code/from_code
+@@ -760,6 +767,10 @@ namespace smt::noodler {
+             return "to_int";
+         case ConversionType::FROM_INT:
+             return "from_int";
++		case ConversionType::TO_REAL:
++			return "to_real";
++		case ConversionType::FROM_REAL:
++			return "from_real";
+ 
+         default:
+             UNREACHABLE();
+diff --git a/src/smt/theory_str_noodler/theory_str_noodler.cpp b/src/smt/theory_str_noodler/theory_str_noodler.cpp
+index 25daa4852..6de656508 100644
+--- a/src/smt/theory_str_noodler/theory_str_noodler.cpp
++++ b/src/smt/theory_str_noodler/theory_str_noodler.cpp
+@@ -410,7 +410,9 @@ namespace smt::noodler {
+             m_util_s.str.is_stoi(n) || // str.to_int
+             m_util_s.str.is_itos(n) || // str.from_int
+             m_util_s.str.is_to_code(n) || // str.to_code
+-            m_util_s.str.is_from_code(n) // str.from_code
++            m_util_s.str.is_from_code(n) || // str.from_code
++			m_util_s.str.is_stor(n) ||
++			m_util_s.str.is_rtos(n)
+         ) {
+             handle_conversion(n);
+         } else if (
+@@ -2116,11 +2118,17 @@ namespace smt::noodler {
+         } else if (m_util_s.str.is_itos(conversion, arg)) {
+             type = ConversionType::FROM_INT;
+             name_of_type = "from_int";
+-        } else {
++        } else if (m_util_s.str.is_stor(conversion, arg)) {
++			type = ConversionType::TO_REAL;
++			name_of_type = "to_real";
++		} else if (m_util_s.str.is_rtos(conversion, arg)) {
++			type = ConversionType::FROM_REAL;
++			name_of_type = "from_real";
++		} else {
+             UNREACHABLE();
+             return;
+         }
+-        bool tranforming_from = (type == ConversionType::FROM_CODE || type == ConversionType::FROM_INT);
++        bool tranforming_from = (type == ConversionType::FROM_CODE || type == ConversionType::FROM_INT || type == ConversionType::FROM_REAL);
+ 
+         // get the var for the argument
+         BasicTerm var_for_arg(BasicTermType::Variable);
+@@ -2205,6 +2213,13 @@ namespace smt::noodler {
+                     mk_literal(m_util_s.re.mk_in_re(z3_var_for_conversion, m_util_s.re.mk_loop(m_util_s.re.mk_full_char(nullptr), m_util_a.mk_int(0), m_util_a.mk_int(m_params.m_underapprox_length))))
+                 });
+             }
++
++			/*if (type == ConversionType::FROM_REAL) {
++				app *digit = m_util_s.re.mk_range(m_util_s.str.mk_string("0"), m_util_s.str.mk_string("9"));
++				app *dot = m_util_s.re.mk_to_re(m_util_s.str.mk_string("."));
++				app *real_number_format = m_util_s.re.mk_concat(m_util_s.re.mk_plus(digit), m_util_s.re.mk_concat(dot, m_util_s.re.mk_plus(digit)));
++				add_axiom({mk_literal(m_util_s.re.mk_in_re(z3_var_for_conversion, real_number_format))});
++			}*/
+         } else {
+             // we create new fresh noodler var for the integer result which we save into var_name so that
+             // len formula we will create in decision procedure will replace the correct var with the correct expression
+@@ -2237,6 +2252,47 @@ namespace smt::noodler {
+                     add_axiom({mk_literal(m_util_a.mk_le(conversion, m_util_a.mk_int(ten_to_r1)))});
+                 }
+             }
++
++			else if (type == ConversionType::TO_REAL) {
++				// the result of str.to_real cannot be negative:
++				add_axiom({ mk_literal(m_util_a.mk_le(m_util_a.mk_real(rational(0)), conversion)) });
++
++				// string argument must have length >= 3 (e.g. "0.0" as minimal form):
++				add_axiom({ mk_literal(m_util_a.mk_le(m_util_a.mk_int(3), m_util_s.str.mk_length(arg))) });
++
++				// require argument to match the regex [0-9]+ '.' [0-9]+
++				// => at least one digit, exactly one dot, at least one digit after dot
++				app *digits    = m_util_s.re.mk_range(m_util_s.str.mk_string("0"), m_util_s.str.mk_string("9"));
++				app *wholePart = m_util_s.re.mk_plus(digits);                 // [0-9]+
++				app *dot       = m_util_s.re.mk_to_re(m_util_s.str.mk_string("."));  // "."
++				app *fracPart  = m_util_s.re.mk_plus(digits);                 // [0-9]+
++				app *floatRegex = m_util_s.re.mk_concat(wholePart, m_util_s.re.mk_concat(dot, fracPart));
++
++				add_axiom({ mk_literal(m_util_s.re.mk_in_re(arg, floatRegex)) });
++
++				expr *e1 = nullptr, *e2 = nullptr, *e3 = nullptr;
++				rational r1;
++				if (m_util_s.str.is_at(arg)) {
++					// argument is str.at(...)
++					add_axiom({
++									  mk_literal(m_util_a.mk_le(
++											  conversion,
++											  m_util_a.mk_real(rational(9999))
++									  ))
++							  });
++				} else if (m_util_s.str.is_extract(arg, e1, e2, e3) && m_util_a.is_numeral(e3, r1)) {
++					// argument is str.substr(?, ?, numeral):
++					rational ten_to_r1(1);
++					for (rational i(0); i < r1; ++i) {
++						ten_to_r1 *= 10;
++					}
++					add_axiom({
++									  mk_literal(
++											  m_util_a.mk_le(conversion, m_util_a.mk_real(ten_to_r1))
++									  )
++							  });
++				}
++			}
+         }
+ 
+         // Add to todo
+diff --git a/src/smt/theory_str_noodler/theory_str_noodler.h b/src/smt/theory_str_noodler/theory_str_noodler.h
+index b8e9a6afb..d21d4edbc 100644
+--- a/src/smt/theory_str_noodler/theory_str_noodler.h
++++ b/src/smt/theory_str_noodler/theory_str_noodler.h
+@@ -282,6 +282,15 @@ namespace smt::noodler {
+             return expr_ref(var, m);
+         }
+ 
++		expr_ref mk_real_var(const std::string& name) {
++			auto it = this->quantif_vars.find(name);
++			if (it != this->quantif_vars.end())
++				return expr_ref(m.mk_var(it->second, m_util_a.mk_real()), m);
++
++			app* var = m.mk_const(symbol(name.c_str()), m_util_a.mk_real()); // need to be skolem, because it seems they are not printed for models
++			return expr_ref(var, m);
++		}
++
+         /**
+          * @brief Get Z3 string var with exact given @p name
+          *
+diff --git a/src/smt/theory_str_noodler/theory_str_noodler_final_check.cpp b/src/smt/theory_str_noodler/theory_str_noodler_final_check.cpp
+index 149aadee5..f85820c45 100644
+--- a/src/smt/theory_str_noodler/theory_str_noodler_final_check.cpp
++++ b/src/smt/theory_str_noodler/theory_str_noodler_final_check.cpp
+@@ -167,6 +167,7 @@ namespace smt::noodler {
+             for (mata::Symbol s = 48; s <= 57; ++s) {
+                 symbols_in_formula.insert(s);
+             }
++			symbols_in_formula.insert(mata::Symbol{'.'});
+         }
+ 
+         // Create automata assignment for the formula
+@@ -285,9 +286,13 @@ namespace smt::noodler {
+         while (true) {
+             result = dec_proc->compute_next_solution();
+             if (result == l_true) {
++				STRACE("real-conversion", tout << "Jedeme" << std::endl);
+                 auto [noodler_lengths, precision] = dec_proc->get_lengths();
++				STRACE("real-conversion", tout << "Jedeme" << std::endl);
+ 
+                 lengths = len_node_to_z3_formula(noodler_lengths);
++				STRACE("real-conversion", tout << lengths << std::endl);
++				STRACE("real-conversion", tout << "Převedeno" << std::endl);
+ 
+                 STRACE("str-print-notcontains-lia",
+                     std::ofstream out_file("./not-contains-lia.smt2");
+@@ -296,6 +301,7 @@ namespace smt::noodler {
+                 );
+ 
+                 lbool is_lengths_sat = check_len_sat(lengths);
++				STRACE("real-conversion", tout << "Vyjeto: " << is_lengths_sat << std::endl);
+ 
+                 if (is_lengths_sat == l_true) {
+                     STRACE("str", tout << "len sat " << mk_pp(lengths, m) << std::endl;);
+diff --git a/src/smt/theory_str_noodler/theory_str_noodler_model.cpp b/src/smt/theory_str_noodler/theory_str_noodler_model.cpp
+index 1ebbc4ce1..533265a30 100644
+--- a/src/smt/theory_str_noodler/theory_str_noodler_model.cpp
++++ b/src/smt/theory_str_noodler/theory_str_noodler_model.cpp
+@@ -22,7 +22,10 @@ namespace smt::noodler {
+                 if(!th.var_name.contains(var)) {
+                     // if the variable is not found, it was introduced in the preprocessing/decision procedure
+                     // (either as a string or int var), i.e. we can just create a new z3 variable with the same name 
+-                    arith_var = th.mk_int_var(var.get_name().encode());
++                    //arith_var = th.mk_int_var(var.get_name().encode());
++					arith_var = th.mk_real_var(var.get_name().encode());
++
++					STRACE("real-conversion", tout << "Dělám úpravy kódu!" << std::endl);
+                 } else {
+                     arith_var = th.var_name.at(var); // for int var, we just take the var
+                     if (th.m_util_s.is_string(arith_var->get_sort())) {
+@@ -41,7 +44,9 @@ namespace smt::noodler {
+             for (unsigned i = 0; i < needed_vars.size(); ++i) {
+                 bool is_int;
+                 rational val(0);
+-                VERIFY(th.m_util_a.is_numeral(values[i], val, is_int) && is_int);
++				STRACE("real-conversion", tout << "Dělám opravy kódu!" << std::endl);
++                //VERIFY(th.m_util_a.is_numeral(values[i], val, is_int) && is_int);
++				VERIFY(th.m_util_a.is_numeral(values[i], val, is_int));
+                 STRACE("str-model", tout << "Arith model of " << needed_vars[i] << " is " << val << std::endl;);
+                 var_to_arith_model[needed_vars[i]] = val;
+             }
