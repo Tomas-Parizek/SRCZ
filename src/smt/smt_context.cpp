@@ -550,6 +550,7 @@ namespace smt {
 
             enode * curr = r1;
             do {
+				//STRACE("real-conversion", tout << "HA, NASTAVUJU!" << std::endl);
                 curr->m_root = r2;
                 curr = curr->m_next;
             }
@@ -954,6 +955,7 @@ namespace smt {
 
         enode * curr = r1;
         do {
+			//STRACE("real-conversion", tout << "HA, NASTAVUJU! 2" << std::endl);
             curr->m_root = r1;
             curr = curr->m_next;
         }

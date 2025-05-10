@@ -341,7 +341,7 @@ namespace smt::noodler {
          */
         std::pair<LenNode, LenNodePrecision> get_formula_for_conversions();
 
-		LenNode real_conversions_dot(std::set<BasicTerm> &real_vars);
+		LenNode real_conversions_dot(const TermConversion& real_vars);
 
         /**
          * @brief Initialize disquation for TagAut-based handling. Assumed to be called during 
@@ -445,6 +445,10 @@ namespace smt::noodler {
         LenNode get_formula_for_int_conversion(const TermConversion& conv, const std::map<BasicTerm,std::vector<unsigned>>& int_subst_vars_to_possible_valid_lengths);
 
 		LenNode get_formula_for_real_conversion(const TermConversion& conv, const std::map<BasicTerm, std::vector<unsigned>> &real_subst_vars_to_possible_valid_lengths);
+
+		LenNode real_parts_sum(const std::vector<BasicTerm> &subst_vars, size_t index, const std::vector<unsigned> &one_case, const BasicTerm& r);
+
+		void rational_place(rational &base, int exponent);
 
         /**
          * Formula containing all not_contains predicate (nothing else)

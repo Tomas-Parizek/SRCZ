@@ -1103,7 +1103,7 @@ namespace smt::noodler {
 				formula_for_real_subst_var.succ.emplace_back(LenFormulaType::AND,
 															 std::vector<LenNode>{
 					LenNode{LenFormulaType::EQ, {real_subst_var, 0}},
-					LenNode{LenFormulaType::NEQ, {real_version_of(real_subst_var), -1}},
+					LenNode{LenFormulaType::EQ, {real_version_of(real_subst_var), -1}},
 					LenNode{LenFormulaType::EQ, {dot_position(real_subst_var), -3}}
 				});
 				real_subst_vars_to_possible_valid_lengths[real_subst_var].push_back(0);
@@ -1187,32 +1187,21 @@ namespace smt::noodler {
 
 		const BasicTerm& s = conv.string_var;
 		const BasicTerm& i = conv.int_var;
+		auto dot_constraints = real_conversions_dot(conv);
 
 		LenNode result{LenFormulaType::OR};
 		const auto &subst_vars = solution.get_substituted_vars(s);
 
-		if (conv.type == ConversionType::TO_REAL)
-		{
-			LenNode empty_or_one_subst_contains_non_digit{LenFormulaType::OR,
-														  {LenNode{LenFormulaType::EQ, {s, 0}}}};
-			for (const auto &subst_var : subst_vars)
-			{
-				empty_or_one_subst_contains_non_digit.succ.emplace_back(LenFormulaType::EQ, std::vector<LenNode>{
-					real_version_of(subst_var), -1
-				});
-			}
-			result.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
-				LenNode{LenFormulaType::LT, {i, 0}},
-				LenNode{LenFormulaType::EQ, {s, 0}}
-			});
-		}
-		else
-		{
-			result.succ.emplace_back(LenFormulaType::AND, std::vector<LenNode>{
-				LenNode{LenFormulaType::LT, {i, 0}},
-				LenNode{LenFormulaType::EQ, {s, 0}}
-			});
-		}
+		LenNode invalid_case{LenFormulaType::AND, {
+			LenNode{LenFormulaType::NOT, std::vector<LenNode>{dot_constraints}},
+			LenNode{LenFormulaType::EQ, {i, rational{-1}}}
+		}};
+		LenNode valid_case{LenFormulaType::AND, {
+			LenNode{LenFormulaType::LEQ, {rational{0}, i}},
+			dot_constraints,
+		}};
+
+		result.succ.push_back(invalid_case);
 
 		if (!subst_vars.size())
 			return result;
@@ -1236,17 +1225,95 @@ namespace smt::noodler {
 			length_cases = new_cases;
 		}
 
+		LenNode big_vee_nu{LenFormulaType::OR};
 		for (const auto & one_case : length_cases)
 		{
 			assert(subst_vars.size() == one_case.size());
-			// V zásadě mnohem víc kombinací, než kolik by bylo u intu
+			LenNode nu{LenFormulaType::AND};
+			for (size_t j = 0; j < subst_vars.size(); ++j)
+			{
+				LenNode nu_implication{LenFormulaType::OR};
+				nu_implication.succ.emplace_back(LenFormulaType::LT, std::vector<LenNode>{dot_position(subst_vars[j]), 0}); // s_j >= 0 implikuje
+				nu_implication.succ.emplace_back(real_parts_sum(subst_vars, j, one_case, i)); // implikuje sumu reálných částí
 
+				nu.succ.push_back(nu_implication);
+			}
 
+			big_vee_nu.succ.push_back(nu);
 		}
+		valid_case.succ.push_back(big_vee_nu);
+		result.succ.push_back(valid_case);
 
 		STRACE("real-conversion", tout << "Formule pro převod: " << result << std::endl);
 		//return result;
-		return LenNode{LenFormulaType::TRUE};
+		return result;
+	}
+
+	LenNode DecisionProcedure::real_parts_sum(const std::vector<BasicTerm> &subst_vars, size_t index,
+											  const std::vector<unsigned int> &one_case,
+											  const smt::noodler::BasicTerm &r) {
+		LenNode result{LenFormulaType::AND};
+
+		for (ssize_t l = 0; l < one_case[index]; ++l)
+		{
+			LenNode sum{real_version_of(subst_vars[index])};
+			rational place{1};
+			//rational_place(place, one_case[index] - l - 1);
+			rational_place(place, (int)l);
+
+			for (ssize_t j = index - 1; j >= 0; --j)
+			{
+				if (one_case[j] == 0)
+					continue;
+				sum = LenNode{LenFormulaType::PLUS, {sum, LenNode{
+					LenFormulaType::TIMES, std::vector<LenNode>{
+						real_version_of(subst_vars[j]),
+						rational{place}
+					}
+				}}};
+				rational_place(place, one_case[j]);
+			}
+
+			place = 1;
+			//rational_place(place, -((int )one_case[index] - (int)l - 1));
+			rational_place(place, -((int)one_case[index] - (int)l - 1));
+			STRACE("real-conversion", tout << "The exponent: " << (-l) << ", " << (-((int )one_case[index] - (int)l - 1)) << std::endl);
+			STRACE("real-conversion", tout << "Place: " << place << std::endl);
+
+			for (ssize_t j = index + 1; j < subst_vars.size(); ++j)
+			{
+				if (one_case[j] == 0)
+					continue;
+				rational_place(place, -one_case[j]);
+				STRACE("real-conversion", tout << "Place: " << place << std::endl);
+				sum = LenNode{LenFormulaType::PLUS, {sum, LenNode{
+						LenFormulaType::TIMES, std::vector<LenNode>{
+								real_version_of(subst_vars[j]),
+								place
+						}
+				}}};
+			}
+
+			// Platí rovnost l a tečky => platí rovnost r a sumy
+			sum = LenNode{LenFormulaType::OR, {
+				LenNode{LenFormulaType::NEQ, std::vector<LenNode>{
+					l,
+					dot_position(subst_vars[index]),
+				}},
+				LenNode{LenFormulaType::EQ, {sum, r}}
+			}};
+
+			result.succ.push_back(sum);
+		}
+		return result;
+	}
+
+	void DecisionProcedure::rational_place(rational &base, int exponent) {
+		for (int i = 0; i < exponent; ++i)
+			base *= 10;
+
+		for (int i = 0; i < -exponent; ++i)
+			base /= 10;
 	}
 
     LenNode DecisionProcedure::get_formula_for_int_conversion(const TermConversion& conv, const std::map<BasicTerm,std::vector<unsigned>>& int_subst_vars_to_possible_valid_lengths) {
@@ -1433,7 +1500,6 @@ namespace smt::noodler {
 		if (real_conv_formula_with_precision.second != LenNodePrecision::PRECISE) {
 			res_precision = real_conv_formula_with_precision.second;
 		}
-		result.succ.push_back(real_conversions_dot(real_subst_vars));
 
         for (const TermConversion& conv : conversions) {
             STRACE("str-conversion",
@@ -1457,6 +1523,7 @@ namespace smt::noodler {
 				case ConversionType::TO_REAL:
 				case ConversionType::FROM_REAL:
 				{
+					auto dot_constraints = real_conversions_dot(conv);
 					result.succ.push_back(get_formula_for_real_conversion(conv, real_subst_vars_to_possible_valid_lengths));
 					break;
 				}
@@ -1475,43 +1542,47 @@ namespace smt::noodler {
         return {result, res_precision};
     }
 
-	LenNode DecisionProcedure::real_conversions_dot(std::set<BasicTerm> &real_vars) {
-		// Bude tečka
-		LenNode dot_exits{LenFormulaType::OR};
-		LenNode exists_non_epsilon{LenFormulaType::OR};
-		// TODO: Špatně, že existuje tečka musí být kódováno kladným dot_position
-		// TODO: Tahle omezení by měla být implikována validitou
-		for (auto &i : real_vars) {
-			dot_exits.succ.emplace_back(LenFormulaType::NEQ, std::vector<LenNode>{
-					dot_position(i), rational{-1}
-			});
-			exists_non_epsilon.succ.emplace_back(LenFormulaType::NEQ, std::vector<LenNode>{
-					dot_position(i), rational{-3}
-			});
-		}
+	LenNode DecisionProcedure::real_conversions_dot(const TermConversion& conv) {
+		auto &s = conv.string_var;
+		auto &i = conv.int_var;
 
-		LenNode result{LenFormulaType::AND, {dot_exits, exists_non_epsilon}};
+		const auto &subst_vars = solution.get_substituted_vars(s);
+		LenNode dot_exists(LenFormulaType::OR);
+		LenNode exists_non_epsilon(LenFormulaType::OR);
+		LenNode just_one_dot(LenFormulaType::AND);
+		LenNode no_invalid(LenFormulaType::AND);
 
-		// Vylučují se
-		// TODO: Špatně, to, že je jeden -1 (resp. že je kladný >=0 spíš) neznamená že další je validní bez tečky
-		// TODO: Může totiž být i epsilon
-		for (auto i = real_vars.begin(); i != real_vars.end(); ++i)
-		{
-			for (auto j = std::next(i); j != real_vars.end(); ++j)
-			{
-				auto &s0 = *i;
-				auto &s1 = *j;
+		for (size_t i = 0; i < subst_vars.size(); ++i) {
+			auto &subst_var = subst_vars[i];
 
-				result.succ.emplace_back(LenFormulaType::OR, std::vector<LenNode>{
-					LenNode{LenFormulaType::EQ, {dot_position(s0), rational{-1}}},
-					LenNode{LenFormulaType::EQ, {dot_position(s1), rational{-1}}},
-				});
+			dot_exists.succ.emplace_back(LenFormulaType::LEQ, std::vector<LenNode>{rational{0}, dot_position(subst_var)});
+			exists_non_epsilon.succ.emplace_back(LenFormulaType::NEQ, std::vector<LenNode>{dot_position(subst_var), rational{-3}});
+			no_invalid.succ.emplace_back(LenFormulaType::NEQ, std::vector<LenNode>{dot_position(subst_var), rational{-2}});
+
+			// TODO: Hodit do jednoho andu a ten and do just_one_dot
+			LenNode just_one_dot_for_subst_var(LenFormulaType::AND);
+			for (size_t j = i + 1; j < subst_vars.size(); ++j) {
+				auto &subst_var_j = subst_vars[j];
+				LenNode implication{LenFormulaType::OR, std::vector<LenNode>{
+					LenNode{LenFormulaType::NOT, std::vector<LenNode>{
+						LenNode{LenFormulaType::LEQ, std::vector<LenNode>{
+							rational{0}, dot_position(subst_var)}
+						}
+					}}, // >= 0  ==>
+					LenNode{LenFormulaType::OR, std::vector<LenNode>{
+						LenNode{LenFormulaType::EQ, std::vector<LenNode>{dot_position(subst_var_j), -1}},
+						LenNode{LenFormulaType::EQ, std::vector<LenNode>{dot_position(subst_var_j), -3}},
+					}}
+				}};
+
+				just_one_dot_for_subst_var.succ.emplace_back(implication);
 			}
+			just_one_dot.succ.emplace_back(just_one_dot_for_subst_var);
 		}
 
-		STRACE("real-conversion", tout << "Tečková omezení: " << result << std::endl);
-
-		return result;
+		return LenNode{LenFormulaType::AND, std::vector<LenNode>{
+			dot_exists, exists_non_epsilon, just_one_dot, no_invalid
+		}};
 	}
 
     void DecisionProcedure::init_ca_diseq(const Predicate& diseq) {
@@ -1941,6 +2012,22 @@ namespace smt::noodler {
                     update_model_and_aut_ass(var, zstring(to_code_value.get_unsigned())); // zstring(unsigned) returns char with the code point of the argument
                 } // for the case to_code_value == -1 we shoulh have (str.len var) != 1, so we do not need to restrict the language, as it should have been already be restricted by lenght
             }
+
+			if (real_subst_vars.contains(var)) {
+				STRACE("real-conversion", tout << "Ty vole, je tam " << var << std::endl);
+
+				if (len == 0)
+					update_model_and_aut_ass(var, zstring());
+				else
+				{
+					rational to_real_value = get_arith_model_of_var(real_version_of(var));
+					STRACE("real-conversion",
+						   tout << var << " = " << to_real_value << " = (string) " << zstring(to_real_value) << std::endl;
+							tout << "dot_position:" << get_arith_model_of_var(dot_position(var)) << std::endl <<
+							"len: " << get_arith_model_of_var(var) << std::endl;
+					);
+				}
+			}
         }
 
         // we remove dummy symbol from automata, so we do not have to work with it
@@ -2061,6 +2148,7 @@ namespace smt::noodler {
         std::vector<BasicTerm> needed_vars;
         for (const BasicTerm& len_var : solution.length_sensitive_vars) {
             if (!len_var.is_literal() && solution.aut_ass.contains(len_var)) {
+				STRACE("real-conversion", tout << "Into model: " << len_var << std::endl);
                 needed_vars.push_back(len_var);
 
                 if (int_subst_vars.contains(len_var)) {
@@ -2070,6 +2158,11 @@ namespace smt::noodler {
                 if (code_subst_vars.contains(len_var)) {
                     needed_vars.push_back(code_version_of(len_var));
                 }
+
+				if (real_subst_vars.contains(len_var)) {
+					needed_vars.push_back(real_version_of(len_var));
+					needed_vars.push_back(dot_position(len_var));
+				}
             }
         }
         return needed_vars;

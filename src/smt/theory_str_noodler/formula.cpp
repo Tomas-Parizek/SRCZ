@@ -417,8 +417,6 @@ namespace smt::noodler {
 				return expr_ref(ctx.seq_utilities.str.mk_length(expr), ctx.manager);
 			}
 
-			STRACE("real-conversion", tout << "Je proměnná real?: " << ctx.arith_utilities.is_real(expr.get()->get_sort()) << std::endl);
-
 			return expr;
 		}
 

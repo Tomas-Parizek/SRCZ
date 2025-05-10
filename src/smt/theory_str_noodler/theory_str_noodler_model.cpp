@@ -13,7 +13,9 @@ namespace smt::noodler {
         std::vector<BasicTerm> needed_vars;
         theory_str_noodler& th;
     public:
-        noodler_var_value_proc(BasicTerm str_var, theory_str_noodler& th) : str_var(str_var), needed_vars(th.dec_proc->get_len_vars_for_model(str_var)), th(th) {}
+        noodler_var_value_proc(BasicTerm str_var, theory_str_noodler& th) : str_var(str_var), needed_vars(th.dec_proc->get_len_vars_for_model(str_var)), th(th) {
+			STRACE("real-conversion", tout << "Tady se volá že proměnný do modelu" << std::endl);
+		}
 
         void get_dependencies(buffer<model_value_dependency> & result) override {
             for (const BasicTerm& var : needed_vars) {
@@ -33,7 +35,8 @@ namespace smt::noodler {
                         arith_var = expr_ref(th.m_util_s.str.mk_length(arith_var), th.m);
                     }
                 }
-                result.push_back(model_value_dependency(th.ctx.get_enode(arith_var)));
+				STRACE("real-conversion", tout << "Nemá enode: " << arith_var << std::endl);
+				result.push_back(model_value_dependency(th.ctx.get_enode(arith_var)));
             }
         }
 
@@ -140,9 +143,11 @@ namespace smt::noodler {
     model_value_proc* theory_str_noodler::model_of_string_var(app* str_var) {
         BasicTerm var = util::get_variable_basic_term(str_var);
         if (relevant_vars.contains(var)) {
+			STRACE("real-conversion", tout << "Cesta A" << std::endl);
             // for relevant (string) var, we get the model from the decision procedure that returned sat
             return alloc(noodler_var_value_proc, var, *this);
         } else {
+			STRACE("real-conversion", tout << "Cesta A" << std::endl);
             // for non-relevant, we cannot get them from the decision procedure, but because they are not relevant, we can return anything (restricted by length)
             return alloc(str_var_value_proc, str_var, ctx, m_util_s, m_util_a);
         }
